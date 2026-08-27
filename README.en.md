@@ -9,6 +9,7 @@ For the autonomous-agency layer (cron wake → drive/concern → action selectio
 read **[docs/AUTONOMY.en.md](./docs/AUTONOMY.en.md)** — the architecture argument, the full citations, and the honest fault lines.
 The engineering pitfalls we hit building this are collected in **[docs/PATTERNS.en.md](./docs/PATTERNS.en.md)** — caching, cold-start, Prisma/pgvector, retrieval, agent safety, retry, time, and more (sixteen areas), with the silent and domain-specific ones up front and the table-stakes hygiene in an appendix. Worth a read before you fork.
 For the epistemic layer (retrieval-first / no hallucinated recall / attribution checks / symmetric verification / concern self-checks), see **[docs/EPISTEMIC.en.md](./docs/EPISTEMIC.en.md)** — the operational manual for the AGENTS.md epistemic layer.
+Engineering study notes on AI “desire” are in **[docs/DESIRE-STUDY.md](./docs/DESIRE-STUDY.md)** (Chinese) — a literature digest covering triggers and scheduling, motivation state, expression timing, multi-entry deployment, and behavioral testing. Where motivation comes from is left to each person's own judgment; the notes are engineering reference only.
 
 > **Status: engine complete, with tests and docs.** hybrid retrieval, self-drive / concern, the
 > reproducible eval, conversational onboarding, reference delivery providers, and the adversarial self-audit
