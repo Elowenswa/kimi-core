@@ -10,6 +10,7 @@
 搭这套东西踩过的工程陷阱都收在 **[docs/PATTERNS.md](./docs/PATTERNS.md)**——缓存、冷启动、Prisma/pgvector、检索、agent 安全、retry、时间等十六类，无声失败和域内专有的在前、基础卫生(table-stakes)附在文末。fork 前建议通读一遍。
 认知纪律（检索优先 / 不编 / 归因 / 对称验证 / concern self-check）见 **[docs/EPISTEMIC.md](./docs/EPISTEMIC.md)**——这是 AGENTS.md epistemic 层的操作手册。
 想把它当一个前端的**唯一后端**（记忆 + dashboard 数据 + 状态快照）用，见 **[docs/ONE-ENGINE.md](./docs/ONE-ENGINE.md)**——配 [kimi-room](https://github.com/marikagura/kimi-room)（PWA）/ [kimi-manor](https://github.com/marikagura/kimi-manor)（桌面仪表盘），开 `KIMI_EXTENSIONS=store` 即可。
+AI “desire”的工程学习笔记见 **[docs/DESIRE-STUDY.md](./docs/DESIRE-STUDY.md)**——触发与调度、动机状态、表达时机、多入口部署和行为测试的文献整理；动机来源由人自由心证，笔记只做工程参考。
 
 > **状态：引擎完整，有测试有文档。** hybrid retrieval、self-drive / concern、可复现 eval、对话式
 > onboarding、参考投递 providers、对抗式自审 harness 都已落地（tsc + test + scrub 在 CI 里跑）。
