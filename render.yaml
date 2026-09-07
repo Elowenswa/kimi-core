@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: kimi-core
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: LLM_BASE_URL
+        sync: false
+      - key: LLM_API_KEY
+        sync: false
+      - key: KIMI_MODEL
+        sync: false
+      - key: KIMI_API_KEY
+        generateValue: true
+      - key: KIMI_EXTENSIONS
+        value: store
+      - key: KIMI_TZ
+        value: Asia/Shanghai
