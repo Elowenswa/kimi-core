@@ -197,6 +197,23 @@ model Memory {
   @@map("memories")
 }
 
+// Append-only feed consumed by multi-device incremental sync.
+// snapshot stores the public namespace-scoped Memory shape at the time of the change.
+model MemoryChange {
+  id            String   @id @default(uuid())
+  changeId      String   @unique
+  namespace     String
+  memoryId      String
+  operation     String
+  versionVector Json?
+  snapshot      Json
+  emittedAt     DateTime @default(now())
+
+  @@index([namespace, emittedAt, id])
+  @@index([memoryId, emittedAt])
+  @@map("memory_changes")
+}
+
 // ============================================
 // Event table
 // ============================================

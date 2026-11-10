@@ -1,7 +1,7 @@
 // ============================================================================
 // Memory domain tool registry.
 // memory_write / memory_edit / memory_reopen / memory_search / memory_search_safe /
-// memory_read / graph_walk / memory_close
+// memory_read / graph_walk / memory_close / memory_changes
 // ============================================================================
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -17,6 +17,7 @@ import { errMessage } from "./lib/err.js";
 import { publicSearchDrop } from "./lib/reentry-filter.js";
 import { getNotifier } from "./lib/providers.js";
 import { validateNamespace } from "@kimi/context-core";
+import { randomUUID } from "node:crypto";
 
 type VersionVector = Record<string, number>;
 type VectorRelation = "equal" | "dominates" | "dominated" | "concurrent";
@@ -56,6 +57,73 @@ function mergeVectors(...values: unknown[]): VersionVector {
     }
   }
   return merged;
+}
+
+type MemoryChangeOperation = "write" | "edit" | "close" | "reopen";
+
+async function recordMemoryChange(memoryId: string, namespace: string | null | undefined, operation: MemoryChangeOperation): Promise<void> {
+  const namespaceValue = validateNamespace(namespace) ?? undefined;
+  if (!namespaceValue) return;
+  try {
+    const memory = await prisma.memory.findUnique({
+      where: { id: memoryId },
+      select: {
+        id: true,
+        namespace: true,
+        versionVector: true,
+        memoryType: true,
+        title: true,
+        content: true,
+        importance: true,
+        sourceType: true,
+        isActive: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+    if (!memory || memory.namespace !== namespaceValue) return;
+    await prisma.memoryChange.create({
+      data: {
+        changeId: randomUUID(),
+        namespace: namespaceValue,
+        memoryId: memory.id,
+        operation,
+        versionVector: memory.versionVector ?? undefined,
+        snapshot: {
+          id: memory.id,
+          namespace: memory.namespace,
+          versionVector: memory.versionVector,
+          memoryType: memory.memoryType,
+          key: memory.title,
+          content: memory.content,
+          order: memory.importance,
+          active: memory.isActive,
+          tags: [],
+          createdAt: memory.createdAt.toISOString(),
+          updatedAt: memory.updatedAt.toISOString(),
+          coreId: memory.id,
+        },
+      },
+    });
+  } catch (error) {
+    console.warn(`[${operation}] memory change log failed:`, errMessage(error));
+  }
+}
+
+function decodeChangeCursor(cursor: string | undefined): { emittedAt: Date; id: string } | null {
+  if (!cursor) return null;
+  try {
+    const value = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as { emittedAt?: string; id?: string };
+    if (!value.emittedAt || !value.id) return null;
+    const emittedAt = new Date(value.emittedAt);
+    return Number.isNaN(emittedAt.getTime()) ? null : { emittedAt, id: value.id };
+  } catch {
+    return null;
+  }
+}
+
+function encodeChangeCursor(emittedAt: Date, id: string): string {
+  return Buffer.from(JSON.stringify({ emittedAt: emittedAt.toISOString(), id }), "utf8").toString("base64url");
 }
 
 export function registerMemoryTools(server: McpServer) {
@@ -270,6 +338,7 @@ export function registerMemoryTools(server: McpServer) {
         console.warn("[memory_write] breadcrumb event failed:", errMessage(e));
       }
 
+      await recordMemoryChange(memory.id, namespaceValue, "write");
       return { content: [{ type: "text", text: `Memory saved: ${memory.id} — "${memory.title}"` }] };
     },
   );
@@ -284,7 +353,7 @@ export function registerMemoryTools(server: McpServer) {
     async ({ id, reason }) => {
       const existing = await prisma.memory.findUnique({
         where: { id },
-        select: { id: true, title: true, resolution: true, content: true },
+        select: { id: true, title: true, resolution: true, content: true, namespace: true },
       });
       if (!existing) {
         return { content: [{ type: "text", text: `Memory ${id} not found.` }] };
@@ -298,6 +367,7 @@ export function registerMemoryTools(server: McpServer) {
         where: { id },
         data: { resolution: "OPEN", content: newContent },
       });
+      await recordMemoryChange(id, existing.namespace, "reopen");
       return { content: [{ type: "text", text: `Reopened "${existing.title}" (was ${existing.resolution}). selfSweep will re-evaluate.` }] };
     },
   );
@@ -574,12 +644,13 @@ export function registerMemoryTools(server: McpServer) {
         ? { id, isActive: true }
         : { isActive: true, title: { contains: titleMatch, mode: "insensitive" } };
       if (!id && memoryType) where.memoryType = memoryType;
-      const matches = await prisma.memory.findMany({ where });
+      const matches = await prisma.memory.findMany({ where, select: { id: true, namespace: true, memoryType: true, title: true, importance: true } });
       if (!matches.length) return { content: [{ type: "text", text: `No active memory matched ${id ? `id ${id}` : `"${titleMatch}"`}.` }] };
       await prisma.memory.updateMany({
         where: { id: { in: matches.map((m) => m.id) } },
         data: { isActive: false },
       });
+      await Promise.all(matches.map((match) => recordMemoryChange(match.id, match.namespace, "close")));
       return {
         content: [
           {
@@ -615,7 +686,7 @@ export function registerMemoryTools(server: McpServer) {
       }
       const existing = await prisma.memory.findUnique({
         where: { id },
-        select: { id: true, title: true, summary: true, content: true, versionVector: true },
+        select: { id: true, title: true, summary: true, content: true, versionVector: true, namespace: true },
       });
       if (!existing) {
         return { content: [{ type: "text", text: `Memory ${id} not found.` }] };
@@ -681,6 +752,8 @@ export function registerMemoryTools(server: McpServer) {
         console.warn("[memory_edit] breadcrumb event failed:", errMessage(e));
       }
 
+      await recordMemoryChange(id, existing.namespace, "edit");
+
       // Review notification — so any edit (especially an unwanted one) is visible
       // out-of-band and can be rolled back. Routes through the pluggable notifier
       // (NOTIFIER env: console default / webhook). Best-effort; never blocks.
@@ -692,6 +765,60 @@ export function registerMemoryTools(server: McpServer) {
         .catch((e: unknown) => console.warn("[memory_edit] notify failed:", errMessage(e)));
 
       return { content: [{ type: "text", text: JSON.stringify({ status: "updated", versionVector: updated.versionVector ?? undefined, changed: Object.keys(data) }) }] };
+    },
+  );
+
+  server.tool(
+    "memory_changes",
+    "Read an ordered, namespace-scoped incremental Memory change feed. The cursor advances only after the caller has applied the returned page.",
+    {
+      namespace: z.string().min(1).describe("character/workspace namespace"),
+      cursor: z.string().optional().describe("opaque cursor returned by the previous page"),
+      limit: z.number().int().min(1).max(100).default(50),
+    },
+    async ({ namespace, cursor, limit }) => {
+      const namespaceValue = validateNamespace(namespace);
+      if (!namespaceValue) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: "invalid namespace" }) }], isError: true };
+      }
+      const decoded = decodeChangeCursor(cursor);
+      if (cursor && !decoded) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: "invalid cursor" }) }], isError: true };
+      }
+      const changes = await prisma.memoryChange.findMany({
+        where: {
+          namespace: namespaceValue,
+          ...(decoded ? {
+            OR: [
+              { emittedAt: { gt: decoded.emittedAt } },
+              { emittedAt: decoded.emittedAt, id: { gt: decoded.id } },
+            ],
+          } : {}),
+        },
+        orderBy: [{ emittedAt: "asc" }, { id: "asc" }],
+        take: limit + 1,
+      });
+      const hasMore = changes.length > limit;
+      const page = hasMore ? changes.slice(0, limit) : changes;
+      const last = page[page.length - 1];
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            namespace: namespaceValue,
+            nextCursor: last ? encodeChangeCursor(last.emittedAt, last.id) : (cursor ?? ""),
+            hasMore,
+            changes: page.map((change) => ({
+              changeId: change.changeId,
+              namespace: change.namespace,
+              operation: change.operation,
+              versionVector: change.versionVector,
+              memory: change.snapshot,
+              emittedAt: change.emittedAt.toISOString(),
+            })),
+          }),
+        }],
+      };
     },
   );
 }
