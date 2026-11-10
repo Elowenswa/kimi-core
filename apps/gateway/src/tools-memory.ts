@@ -25,6 +25,7 @@ export function registerMemoryTools(server: McpServer) {
     {
       title: z.string().describe("Memory title"),
       namespace: z.string().optional().describe("character/workspace namespace; omit only for legacy/global memory"),
+      dedupeKey: z.string().optional().describe("Client operation id reused when a queued write is retried"),
       content: z.string().describe("Memory content"),
       summary: z.string().describe("Summary, <=300 chars. (1) do not repeat title (2) cover the full arc — cause / course / conclusion (3) keep the most important concrete details (numbers / names / key quoted phrases) (4) note any unresolved carryover."),
       memoryType: z
@@ -78,6 +79,7 @@ export function registerMemoryTools(server: McpServer) {
     async ({
       title,
       namespace,
+      dedupeKey,
       content,
       summary,
       memoryType,
@@ -99,6 +101,23 @@ export function registerMemoryTools(server: McpServer) {
       eventIdEnd,
     }) => {
       const namespaceValue = validateNamespace(namespace) ?? undefined;
+      if (dedupeKey) {
+        const prior = await prisma.event.findFirst({
+          where: { eventType: "SYSTEM", source: "memory_write", dedupeKey },
+          select: { value: true },
+        });
+        if (prior?.value) {
+          try {
+            const priorValue = JSON.parse(prior.value) as { memoryId?: string; title?: string };
+            if (priorValue.memoryId) {
+              const existing = await prisma.memory.findUnique({ where: { id: priorValue.memoryId }, select: { id: true, title: true } });
+              if (existing) return { content: [{ type: "text", text: `Memory saved: ${existing.id} — "${existing.title}"` }] };
+            }
+          } catch {
+            // An older breadcrumb may not contain structured JSON; continue normally.
+          }
+        }
+      }
       // authorModel guard: SELF-type memories (SELF_SCORE / experiencer=SELF)
       // must be attributed, otherwise the score view can't tell which
       // instrument logged the score. Reject so the caller can supply it.
@@ -193,12 +212,14 @@ export function registerMemoryTools(server: McpServer) {
       try {
         const crumb =
           memoryType === "RESTRICTED"
-            ? { memoryType, importance, experiencer: experiencer ?? "USER" }
-            : { title: memory.title, memoryType, importance, experiencer: experiencer ?? "USER" };
+          ? { memoryId: memory.id, memoryType, importance, experiencer: experiencer ?? "USER" }
+            : { memoryId: memory.id, title: memory.title, memoryType, importance, experiencer: experiencer ?? "USER" };
         await prisma.event.create({
           data: {
+            namespace: namespaceValue,
             eventType: "SYSTEM",
             source: "memory_write",
+            dedupeKey,
             value: JSON.stringify(crumb),
           },
         });
