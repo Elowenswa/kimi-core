@@ -30,6 +30,8 @@ type SyncAudit = {
   error?: string;
 };
 
+type StoredSyncAudit = SyncAudit & { key: string };
+
 async function writeSyncAudit(audit: SyncAudit): Promise<void> {
   try {
     await prisma.pwaKv.create({
@@ -80,11 +82,35 @@ export function registerUserIdentityTools(server: McpServer) {
     "user_identities",
     "Synchronize private kimi-room user identities for the authenticated owner. Identity data is separate from character profiles and memory namespaces.",
     {
-      op: z.enum(["get", "merge"]),
+      op: z.enum(["get", "merge", "audit"]),
       identities: z.array(z.unknown()).optional(),
       activeId: z.string().optional(),
+      limit: z.number().int().min(1).max(100).optional(),
     },
-    async ({ op, identities, activeId }) => {
+    async ({ op, identities, activeId, limit }) => {
+      if (op === "audit") {
+        const rows = await prisma.pwaKv.findMany({
+          where: { namespace: AUDIT_COLLECTION },
+          orderBy: { createdAt: "desc" },
+          take: limit ?? 50,
+        });
+        const audits: StoredSyncAudit[] = rows.flatMap((row) => {
+          if (!row.payload || typeof row.payload !== "object") return [];
+          const payload = row.payload as Partial<SyncAudit>;
+          if (payload.operation !== "get" && payload.operation !== "merge") return [];
+          return [{
+            key: row.key,
+            operation: payload.operation,
+            identityCount: typeof payload.identityCount === "number" ? payload.identityCount : 0,
+            resultCount: typeof payload.resultCount === "number" ? payload.resultCount : 0,
+            success: payload.success === true,
+            durationMs: typeof payload.durationMs === "number" ? payload.durationMs : 0,
+            createdAt: typeof payload.createdAt === "string" ? payload.createdAt : row.createdAt.toISOString(),
+            ...(typeof payload.error === "string" ? { error: payload.error.slice(0, 240) } : {}),
+          }];
+        });
+        return { content: [{ type: "text", text: JSON.stringify({ audits }) }] };
+      }
       const startedAt = Date.now();
       const requestedCount = identities?.length ?? 0;
       try {
