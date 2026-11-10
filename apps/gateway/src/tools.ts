@@ -15,6 +15,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { registerMemoryTools } from "./tools-memory.js";
 import { registerCharacterTools } from "./tools-characters.js";
+import { registerUserIdentityTools } from "./tools-user-identities.js";
 import { registerStateTools } from "./tools-state.js";
 import { registerEntityTools } from "./tools-entity.js";
 import { registerProfileTools } from "./tools-profile.js";
@@ -32,6 +33,7 @@ export { SELF_CONCERN_DEFAULTS, upsertActiveState } from "./tools-shared.js";
 export function registerAllTools(server: McpServer) {
   registerMemoryTools(server);
   registerCharacterTools(server);
+  registerUserIdentityTools(server);
   registerStateTools(server);
   registerEntityTools(server);
   registerProfileTools(server);
