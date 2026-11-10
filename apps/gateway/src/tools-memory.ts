@@ -427,7 +427,7 @@ export function registerMemoryTools(server: McpServer) {
         .slice(0, limit)
         .map(
           (m: any) =>
-            `[${m.memoryType}] ${m.title} (imp:${m.importance}, score:${m.final.toFixed(2)})\n${body(m)}`,
+            `[${m.memoryType}] ${m.title} (id:${m.id}, imp:${m.importance}, score:${m.final.toFixed(2)})\n${body(m)}`,
         )
         .join("\n\n---\n\n");
       return { content: [{ type: "text", text }] };
