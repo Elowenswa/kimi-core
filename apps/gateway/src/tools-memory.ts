@@ -435,6 +435,61 @@ export function registerMemoryTools(server: McpServer) {
   );
 
   server.tool(
+    "memory_export",
+    "Export active memories for one character namespace as structured JSON for restoring a trusted owner device. A namespace is required; legacy/global memories are never exported by this endpoint.",
+    {
+      namespace: z.string().min(1).describe("character/workspace namespace to export"),
+      limit: z.number().int().min(1).max(500).default(200),
+      updatedSince: z.string().optional().describe("optional ISO timestamp; only memories updated at or after this time"),
+    },
+    async ({ namespace, limit, updatedSince }) => {
+      const namespaceValue = validateNamespace(namespace);
+      if (!namespaceValue) {
+        return { content: [{ type: "text", text: JSON.stringify({ memories: [], error: "invalid namespace" }) }], isError: true };
+      }
+      const memories = await prisma.memory.findMany({
+        where: {
+          namespace: namespaceValue,
+          ...(updatedSince ? { updatedAt: { gte: new Date(updatedSince) } } : {}),
+        },
+        orderBy: { updatedAt: "asc" },
+        take: limit,
+        select: {
+          id: true,
+          namespace: true,
+          versionVector: true,
+          memoryType: true,
+          title: true,
+          content: true,
+          importance: true,
+          sourceType: true,
+          isActive: true,
+          createdAt: true,
+          updatedAt: true,
+          valence: true,
+        },
+      });
+      const payload = {
+        namespace: namespaceValue,
+        memories: memories.map((m) => ({
+          id: m.id,
+          namespace: m.namespace,
+          versionVector: m.versionVector,
+          memoryType: m.memoryType,
+          title: m.title,
+          content: m.content,
+          importance: m.importance,
+          sourceType: m.sourceType,
+          isActive: m.isActive,
+          createdAt: m.createdAt.toISOString(),
+          updatedAt: m.updatedAt.toISOString(),
+          valence: m.valence,
+        })),
+      };
+      return { content: [{ type: "text", text: JSON.stringify(payload) }] };
+    },
+  );
+  server.tool(
     "memory_read",
     "Read recent memories or all memories of a type. RESTRICTED type excluded by default — pass memoryType=RESTRICTED to opt in. includeContent=true returns the full body.",
     {
