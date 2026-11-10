@@ -132,6 +132,8 @@ model Memory {
   // Optional isolation scope. NULL is legacy/global data and is never copied
   // into a character namespace automatically.
   namespace       String?
+  // Causal version vector for multi-device conflict detection. NULL is legacy data.
+  versionVector   Json?
   memoryType      MemoryType
   title           String
   summary         String?

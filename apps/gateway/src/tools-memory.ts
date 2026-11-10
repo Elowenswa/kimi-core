@@ -18,6 +18,46 @@ import { publicSearchDrop } from "./lib/reentry-filter.js";
 import { getNotifier } from "./lib/providers.js";
 import { validateNamespace } from "@kimi/context-core";
 
+type VersionVector = Record<string, number>;
+type VectorRelation = "equal" | "dominates" | "dominated" | "concurrent";
+
+function normalizeVector(value: unknown): VersionVector {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([, n]) => typeof n === "number" && Number.isInteger(n) && n >= 0)
+      .map(([key, n]) => [key, n as number]),
+  );
+}
+
+function compareVectors(left: unknown, right: unknown): VectorRelation {
+  const a = normalizeVector(left);
+  const b = normalizeVector(right);
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  let aGreater = false;
+  let bGreater = false;
+  for (const key of keys) {
+    const av = a[key] ?? 0;
+    const bv = b[key] ?? 0;
+    if (av > bv) aGreater = true;
+    if (bv > av) bGreater = true;
+  }
+  if (!aGreater && !bGreater) return "equal";
+  if (aGreater && !bGreater) return "dominates";
+  if (!aGreater && bGreater) return "dominated";
+  return "concurrent";
+}
+
+function mergeVectors(...values: unknown[]): VersionVector {
+  const merged: VersionVector = {};
+  for (const value of values) {
+    for (const [deviceId, version] of Object.entries(normalizeVector(value))) {
+      merged[deviceId] = Math.max(merged[deviceId] ?? 0, version);
+    }
+  }
+  return merged;
+}
+
 export function registerMemoryTools(server: McpServer) {
   server.tool(
     "memory_write",
@@ -26,6 +66,7 @@ export function registerMemoryTools(server: McpServer) {
       title: z.string().describe("Memory title"),
       namespace: z.string().optional().describe("character/workspace namespace; omit only for legacy/global memory"),
       dedupeKey: z.string().optional().describe("Client operation id reused when a queued write is retried"),
+      versionVector: z.record(z.string(), z.number().int().nonnegative()).optional().describe("Causal version vector from the writing device"),
       content: z.string().describe("Memory content"),
       summary: z.string().describe("Summary, <=300 chars. (1) do not repeat title (2) cover the full arc — cause / course / conclusion (3) keep the most important concrete details (numbers / names / key quoted phrases) (4) note any unresolved carryover."),
       memoryType: z
@@ -80,6 +121,7 @@ export function registerMemoryTools(server: McpServer) {
       title,
       namespace,
       dedupeKey,
+      versionVector,
       content,
       summary,
       memoryType,
@@ -157,6 +199,7 @@ export function registerMemoryTools(server: McpServer) {
       const memory = await prisma.memory.create({
         data: {
           namespace: namespaceValue,
+          versionVector,
           title,
           content,
           summary,
@@ -505,8 +548,10 @@ export function registerMemoryTools(server: McpServer) {
       summary: z.string().optional().describe("New summary, <=300 chars (omit to keep)"),
       content: z.string().optional().describe("New content (omit to keep)"),
       importance: z.number().min(1).max(5).optional().describe("New importance 1-5 (omit to keep)"),
+      versionVector: z.record(z.string(), z.number().int().nonnegative()).optional().describe("Client's causal version after this edit"),
+      baseVersionVector: z.record(z.string(), z.number().int().nonnegative()).optional().describe("Version observed before this edit"),
     },
-    async ({ id, authorization, title, summary, content, importance }) => {
+    async ({ id, authorization, title, summary, content, importance, versionVector, baseVersionVector }) => {
       if (!authorization || !authorization.trim()) {
         return {
           content: [{ type: "text" as const, text: "authorization required: memory_edit is user-gated — pass the user's instruction that asked for this edit." }],
@@ -515,20 +560,39 @@ export function registerMemoryTools(server: McpServer) {
       }
       const existing = await prisma.memory.findUnique({
         where: { id },
-        select: { id: true, title: true, summary: true, content: true },
+        select: { id: true, title: true, summary: true, content: true, versionVector: true },
       });
       if (!existing) {
         return { content: [{ type: "text", text: `Memory ${id} not found.` }] };
       }
-      const data: { title?: string; summary?: string; content?: string; importance?: number } = {};
+      if (versionVector && baseVersionVector && existing.versionVector) {
+        const remoteSinceBase = compareVectors(existing.versionVector, baseVersionVector);
+        const localAgainstRemote = compareVectors(versionVector, existing.versionVector);
+        if (remoteSinceBase === "dominates" && localAgainstRemote !== "dominates") {
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                status: "conflict",
+                id: existing.id,
+                title: existing.title,
+                content: existing.content,
+                versionVector: normalizeVector(existing.versionVector),
+              }),
+            }],
+          };
+        }
+      }
+      const data: { title?: string; summary?: string; content?: string; importance?: number; versionVector?: VersionVector } = {};
       if (title !== undefined) data.title = title;
       if (summary !== undefined) data.summary = summary;
       if (content !== undefined) data.content = content;
       if (importance !== undefined) data.importance = importance;
+      if (versionVector || existing.versionVector) data.versionVector = mergeVectors(existing.versionVector, versionVector);
       if (Object.keys(data).length === 0) {
         return { content: [{ type: "text", text: "Nothing to edit — pass at least one of title / summary / content / importance." }] };
       }
-      await prisma.memory.update({ where: { id }, data });
+      const updated = await prisma.memory.update({ where: { id }, data, select: { versionVector: true } });
 
       // Re-index the embedding when a text field changed, or search goes stale.
       if (title !== undefined || summary !== undefined || content !== undefined) {
@@ -572,7 +636,7 @@ export function registerMemoryTools(server: McpServer) {
         })
         .catch((e: unknown) => console.warn("[memory_edit] notify failed:", errMessage(e)));
 
-      return { content: [{ type: "text", text: `Edited memory ${id} — changed ${Object.keys(data).join(", ")}.` }] };
+      return { content: [{ type: "text", text: JSON.stringify({ status: "updated", versionVector: updated.versionVector ?? undefined, changed: Object.keys(data) }) }] };
     },
   );
 }
