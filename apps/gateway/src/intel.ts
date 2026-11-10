@@ -302,7 +302,22 @@ export async function scanDialogueDigests(
   cutoffEnd?: Date,
   source: string = CHAT_SOURCE,
   srcTag: string = "",
+  namespace?: string | null,
 ): Promise<{ created: number; skipped: number; failed: number }> {
+  // Never group character conversations together. The scheduler calls this
+  // without a namespace, so fan out once per observed scope plus the legacy
+  // NULL scope; each recursive call then performs the normal session logic.
+  if (namespace === undefined) {
+    const scopes = await prisma.event.findMany({
+      where: { eventType: "CHAT", source, ...(cutoffStart ? { createdAt: { gte: cutoffStart } } : {}) },
+      select: { namespace: true },
+      distinct: ["namespace"],
+    });
+    const namespaces = new Set<string | null>(scopes.map((s) => s.namespace));
+    namespaces.add(null);
+    const results = await Promise.all([...namespaces].map((scope) => scanDialogueDigests(cutoffStart, cutoffEnd, source, srcTag, scope)));
+    return results.reduce((a, b) => ({ created: a.created + b.created, skipped: a.skipped + b.skipped, failed: a.failed + b.failed }), { created: 0, skipped: 0, failed: 0 });
+  }
   const now = Date.now();
   // No fixed lag; completeness is enforced by the session idle gate below.
   const _cutoffEnd = cutoffEnd ?? new Date(now);
@@ -315,6 +330,7 @@ export async function scanDialogueDigests(
       eventType: "CHAT",
       source,
       createdAt: { gte: _cutoffStart, lt: _cutoffEnd },
+      namespace: namespace === null ? null : namespace,
     },
     orderBy: { createdAt: "asc" },
   });
@@ -374,7 +390,7 @@ export async function scanDialogueDigests(
     // "[digest failed") is not counted as complete — delete it so this round can
     // regenerate, otherwise a failed day stays stuck forever.
     const existing = await prisma.memory.findFirst({
-      where: { ...CHAT_DIGEST_WHERE, title: { startsWith: titlePrefix } },
+      where: { ...CHAT_DIGEST_WHERE, namespace, title: { startsWith: titlePrefix } },
       select: { id: true, summary: true },
     });
     if (existing) {
@@ -454,6 +470,7 @@ Output JSON (JSON only, no markdown fence):
       const digestMem = await prisma.memory.create({
         data: {
           ...CHAT_DIGEST_WHERE,
+          namespace,
           title: titlePrefix,
           content: dContent,
           summary: dSummary,

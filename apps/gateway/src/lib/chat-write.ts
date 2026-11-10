@@ -41,6 +41,7 @@ export async function writeChatEvent(input: ChatWriteInput): Promise<ChatWriteRe
   const dedupeKey = input.dedupeKey && input.dedupeKey.trim() ? input.dedupeKey.trim().slice(0, 200) : null;
   const data = {
     eventType: EventType.CHAT,
+    namespace,
     value: buildChatEventValue(input.role ?? "user", input.text, { threadId, namespace }),
     source: input.source && input.source.trim() ? input.source.trim().slice(0, 80) : CHAT_SOURCE,
     dedupeKey,

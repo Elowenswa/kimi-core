@@ -356,6 +356,7 @@ export async function loadMergedChat(prisma: PrismaClient, take = 40, sinceTs?: 
   const whereFor = (source: string) => ({
     eventType: "CHAT",
     source,
+    ...(namespace ? { namespace } : { namespace: null }),
     ...(sinceTs ? { createdAt: { gte: sinceTs } } : {}),
     // threadId lives inside the JSON value (no schema column) → coarse `contains`
     // pre-filter; the exact match is re-checked after parse below. Build the needle
@@ -396,7 +397,12 @@ export async function loadChatThreads(
 ): Promise<ChatThread[]> {
   const since = new Date(Date.now() - (opts.lookbackDays ?? 90) * MS_PER_DAY);
   const rows = await prisma.event.findMany({
-    where: { eventType: "CHAT", source: { in: [CHAT_SOURCE, CROSS_CHAT_SOURCE] }, createdAt: { gte: since } } as never,
+    where: {
+      eventType: "CHAT",
+      source: { in: [CHAT_SOURCE, CROSS_CHAT_SOURCE] },
+      createdAt: { gte: since },
+      ...(opts.namespace ? { namespace: opts.namespace } : { namespace: null }),
+    } as never,
     orderBy: { createdAt: "asc" },
     select: { value: true, createdAt: true },
   });

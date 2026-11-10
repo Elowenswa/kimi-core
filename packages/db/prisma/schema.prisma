@@ -129,6 +129,9 @@ model Entity {
 
 model Memory {
   id              String                       @id @default(uuid())
+  // Optional isolation scope. NULL is legacy/global data and is never copied
+  // into a character namespace automatically.
+  namespace       String?
   memoryType      MemoryType
   title           String
   summary         String?
@@ -187,6 +190,8 @@ model Memory {
   @@index([memoryType, sourceType, experiencer])
   @@index([concernKey])
   @@index([createdAt])
+  @@index([namespace, isActive, memoryType])
+  @@index([namespace, createdAt])
   @@map("memories")
 }
 
@@ -196,6 +201,8 @@ model Memory {
 
 model Event {
   id        String    @id @default(uuid())
+  // Optional isolation scope. NULL is legacy/global data.
+  namespace String?
   eventType EventType
   value     String?
   source    String?
@@ -210,6 +217,7 @@ model Event {
   @@index([eventType, source, createdAt])
   @@index([createdAt])
   @@index([dedupeKey])
+  @@index([namespace, eventType, source, createdAt])
   // Idempotency for chat-sync writes: a client-supplied dedupeKey makes a retried
   // send a no-op instead of a duplicate row. Postgres treats NULL as distinct, so
   // rows without a dedupeKey (the default) are unconstrained; only non-null
@@ -529,4 +537,3 @@ enum ConcernGrounding {
   EVIDENCE
   SUBJECTIVE
 }
-

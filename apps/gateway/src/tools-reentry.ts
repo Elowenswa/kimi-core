@@ -7,7 +7,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import prisma from "./db.js";
 import { localDateTime } from "./time.js";
-import { CHAT_DIGEST_WHERE, CHAT_DIGEST_SHARED, loadMergedChat, loadChatThreads } from "@kimi/context-core";
+import { CHAT_DIGEST_WHERE, CHAT_DIGEST_SHARED, loadMergedChat, loadChatThreads, validateNamespace } from "@kimi/context-core";
 import { writeChatEvent, deleteChatEvent } from "./lib/chat-write.js";
 import { isColdStartExcluded } from "./lib/reentry-filter.js";
 import { renderAnchor } from "./tools-shared.js";
@@ -131,8 +131,13 @@ export function registerReentryTools(server: McpServer) {
       "Build full context for a new conversation window. Call this at the start of every new session to load profile, active states, recent memories, topics, and recent chat.",
       "tag: window identifier (suggested cc-YYMMDDHHMM, using the boot timestamp). If passed, it drops a tagged boot anchor; this window's later reentry_delta calls use the same tag so deltas always anchor to this window's own boot/marker, unaffected by other windows advancing the main chain.",
     ].join("\n"),
-    { tag: z.string().optional().describe("Window identifier, paired with this window's later reentry_delta tag. Suggested cc-YYMMDDHHMM.") },
-    async ({ tag }) => {
+    {
+      tag: z.string().optional().describe("Window identifier, paired with this window's later reentry_delta tag. Suggested cc-YYMMDDHHMM."),
+      namespace: z.string().optional().describe("character/workspace namespace; isolates memories, digests and chat"),
+    },
+    async ({ tag, namespace: rawNamespace }) => {
+      const namespace = validateNamespace(rawNamespace) ?? undefined;
+      const namespaceFilter = namespace ? { namespace } : { namespace: null };
       const profile = await prisma.coreProfile.findMany({
         where: { isActive: true, NOT: { key: { startsWith: "private_" } } },
         orderBy: { importance: "desc" },
@@ -157,6 +162,7 @@ export function registerReentryTools(server: McpServer) {
         where: {
           isActive: true,
           memoryType: { in: ["CORE", "BOUNDARY", "PREFERENCE"] },
+          ...namespaceFilter,
         },
         orderBy: [{ importance: "desc" }, { createdAt: "desc" }],
         include: { topic: true },
@@ -178,13 +184,14 @@ export function registerReentryTools(server: McpServer) {
           importance: { gte: 4 },
           // CHAT+SHARED go through the digests section below; exclude here to avoid duplication.
           NOT: { ...CHAT_DIGEST_SHARED },
+          ...namespaceFilter,
         },
         orderBy: [{ importance: "desc" }, { createdAt: "desc" }],
         take: 20,
         include: { topic: true },
       })).filter((m: any) => !isColdStartExcluded(m.title, `${m.title ?? ""} ${m.summary ?? ""} ${m.content ?? ""}`));
       const recentEvents = await prisma.event.findMany({
-        where: { NOT: { source: { in: ["reentry", "reentry_delta"] } } },
+        where: { NOT: { source: { in: ["reentry", "reentry_delta"] } }, ...namespaceFilter },
         orderBy: { createdAt: "desc" },
         take: 10,
       });
@@ -192,7 +199,7 @@ export function registerReentryTools(server: McpServer) {
       // layer is produced by the digest tick; the cold-start filter (externalized,
       // ships neutral) is a second layer on top.
       const digests = (await prisma.memory.findMany({
-        where: { isActive: true, ...CHAT_DIGEST_WHERE },
+        where: { isActive: true, ...CHAT_DIGEST_WHERE, ...namespaceFilter },
         orderBy: { createdAt: "desc" },
         take: 15,
       })).filter((d: any) => !isColdStartExcluded(d.title, `${d.title ?? ""} ${d.summary ?? ""} ${d.content ?? ""}`)).slice(0, 10);
@@ -273,7 +280,7 @@ export function registerReentryTools(server: McpServer) {
       // from the digests above (those are past, compressed). Injected as-is; if a
       // deployment needs to hold some rows back, add a denylist filter over
       // `recentChat` here (e.g. coldStartExcludeContent from lib/reentry-filter).
-      const recentChat = await loadMergedChat(prisma, 20);
+      const recentChat = await loadMergedChat(prisma, 20, undefined, undefined, namespace);
       ctx += "\n\n## Recent chat (raw · merged across surfaces · the current conversation)\n";
       ctx += recentChat.length
         ? recentChat
@@ -290,7 +297,7 @@ export function registerReentryTools(server: McpServer) {
       // after the query, not included in this output). value=tag: a same-tag
       // delta first-call anchors here, not the global latest boot (which could
       // be another window).
-      await prisma.event.create({ data: { eventType: "SYSTEM", source: "reentry", value: tag } });
+      await prisma.event.create({ data: { eventType: "SYSTEM", source: "reentry", value: tag, namespace } });
 
       return { content: [{ type: "text", text: ctx }] };
     },
@@ -310,8 +317,11 @@ export function registerReentryTools(server: McpServer) {
       since: z.string().optional().describe("ISO lower bound. One-shot override, does not advance the marker chain."),
       sinceMinutes: z.number().optional().describe("Look back N minutes. One-shot override, does not advance the marker chain."),
       tag: z.string().optional().describe("Marker chain identifier, multi-window isolation. Default main."),
+      namespace: z.string().optional().describe("character/workspace namespace; isolates the delta watermark and memories"),
     },
-    async ({ since: sinceISO, sinceMinutes, tag }) => {
+    async ({ since: sinceISO, sinceMinutes, tag, namespace: rawNamespace }) => {
+      const namespace = validateNamespace(rawNamespace) ?? undefined;
+      const namespaceFilter = namespace ? { namespace } : { namespace: null };
       const chainTag = tag ?? "main";
       const explicit = !!(sinceISO || sinceMinutes);
       let since: Date;
@@ -324,7 +334,7 @@ export function registerReentryTools(server: McpServer) {
         anchorSrc = `last ${sinceMinutes}min`;
       } else {
         const lastDelta = await prisma.event.findFirst({
-          where: { eventType: "SYSTEM", source: "reentry_delta", value: chainTag },
+          where: { eventType: "SYSTEM", source: "reentry_delta", value: chainTag, ...namespaceFilter },
           orderBy: { createdAt: "desc" },
         });
         if (lastDelta) {
@@ -337,13 +347,13 @@ export function registerReentryTools(server: McpServer) {
           // gap if another window's boot/marker is newer; a tagged boot chain
           // does not have that gap.
           let lastReentry = await prisma.event.findFirst({
-            where: { eventType: "SYSTEM", source: "reentry", value: chainTag },
+            where: { eventType: "SYSTEM", source: "reentry", value: chainTag, ...namespaceFilter },
             orderBy: { createdAt: "desc" },
           });
           let bootSrc = `this window's reentry boot [tag=${chainTag}]`;
           if (!lastReentry) {
             lastReentry = await prisma.event.findFirst({
-              where: { eventType: "SYSTEM", source: "reentry" },
+              where: { eventType: "SYSTEM", source: "reentry", ...namespaceFilter },
               orderBy: { createdAt: "desc" },
             });
             bootSrc = "most recent reentry boot (global, no same-tag boot)";
@@ -373,7 +383,7 @@ export function registerReentryTools(server: McpServer) {
       // delta shares the reentry main function's cold-start exclusion
       // (externalized, ships neutral).
       const anchors = (await prisma.memory.findMany({
-        where: { isActive: true, memoryType: { in: ["CORE", "BOUNDARY", "PREFERENCE"] }, ...recent },
+        where: { isActive: true, memoryType: { in: ["CORE", "BOUNDARY", "PREFERENCE"] }, ...recent, ...namespaceFilter },
         orderBy: [{ importance: "desc" }, { createdAt: "desc" }],
       })).filter((m: any) => !isColdStartExcluded(m.title, `${m.title ?? ""} ${m.summary ?? ""} ${m.content ?? ""}`));
 
@@ -389,13 +399,14 @@ export function registerReentryTools(server: McpServer) {
           importance: { gte: 4 },
           NOT: { ...CHAT_DIGEST_SHARED },
           ...recent,
+          ...namespaceFilter,
         },
         orderBy: { createdAt: "desc" },
         take: 30,
       })).filter((m: any) => !isColdStartExcluded(m.title, `${m.title ?? ""} ${m.summary ?? ""} ${m.content ?? ""}`));
 
       const digests = (await prisma.memory.findMany({
-        where: { isActive: true, ...CHAT_DIGEST_WHERE, ...recent },
+        where: { isActive: true, ...CHAT_DIGEST_WHERE, ...recent, ...namespaceFilter },
         orderBy: { createdAt: "desc" },
         take: 30,
       })).filter((m: any) => !isColdStartExcluded(m.title, `${m.title ?? ""} ${m.summary ?? ""} ${m.content ?? ""}`));
@@ -410,6 +421,7 @@ export function registerReentryTools(server: McpServer) {
           createdAt: { gte: since },
           eventType: { not: "APP_OPEN" },
           NOT: { source: { in: ["reentry", "reentry_delta"] } },
+          ...namespaceFilter,
         },
         orderBy: { createdAt: "desc" },
         take: 40,
@@ -471,7 +483,7 @@ export function registerReentryTools(server: McpServer) {
 
       // Advance the marker chain — only on a default (no explicit override) call.
       if (!explicit) {
-        await prisma.event.create({ data: { eventType: "SYSTEM", source: "reentry_delta", value: chainTag } });
+        await prisma.event.create({ data: { eventType: "SYSTEM", source: "reentry_delta", value: chainTag, namespace } });
         ctx += `\n\n_marker advanced (tag=${chainTag})_`;
       }
 

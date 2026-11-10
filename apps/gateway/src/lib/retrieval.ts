@@ -53,6 +53,7 @@ export type ScoreOpts = {
   limit?: number;
   memoryType?: MemoryType;
   topicId?: string;
+  namespace?: string;
   components?: Components;
   scope?: "default" | "full";
 };
@@ -196,7 +197,7 @@ export async function scoreMemories(
   query: string,
   opts: ScoreOpts = {},
 ): Promise<ScoredMemory[]> {
-  const { limit = 10, memoryType, topicId, components, scope = "default" } = opts;
+  const { limit = 10, memoryType, topicId, namespace, components, scope = "default" } = opts;
   // An empty / whitespace query has no relevance signal: qPattern would be '%%',
   // which ILIKE matches against EVERY row (kw_sim = ILIKE_TITLE ≥ KW_FILTER_FLOOR →
   // passesFilter true for all), turning the externally-exposed memory_search_safe
@@ -224,6 +225,9 @@ export async function scoreMemories(
       : Prisma.sql`AND m."memoryType"::text <> 'RESTRICTED'`;
   const topicFilter = topicId
     ? Prisma.sql`AND m."topicId" = ${topicId}`
+    : Prisma.empty;
+  const namespaceFilter = namespace
+    ? Prisma.sql`AND m."namespace" = ${namespace}`
     : Prisma.empty;
 
   // Semantic vector (cosine sim) — null if no API key / no body / embed
@@ -299,6 +303,7 @@ export async function scoreMemories(
     WHERE m."isActive" = true
       ${typeFilter}
       ${topicFilter}
+      ${namespaceFilter}
   `;
 
   // R-pool augmentation: in 'full' scope on the general search path, fold the

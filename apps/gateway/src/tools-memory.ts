@@ -16,6 +16,7 @@ import { tagDepthIfNeeded } from "./lib/depth-judge.js";
 import { errMessage } from "./lib/err.js";
 import { publicSearchDrop } from "./lib/reentry-filter.js";
 import { getNotifier } from "./lib/providers.js";
+import { validateNamespace } from "@kimi/context-core";
 
 export function registerMemoryTools(server: McpServer) {
   server.tool(
@@ -23,6 +24,7 @@ export function registerMemoryTools(server: McpServer) {
     "Write a new memory to the database. Supports emotional coordinates (valence/arousal) and experiencer tagging (USER/SELF/SHARED).",
     {
       title: z.string().describe("Memory title"),
+      namespace: z.string().optional().describe("character/workspace namespace; omit only for legacy/global memory"),
       content: z.string().describe("Memory content"),
       summary: z.string().describe("Summary, <=300 chars. (1) do not repeat title (2) cover the full arc — cause / course / conclusion (3) keep the most important concrete details (numbers / names / key quoted phrases) (4) note any unresolved carryover."),
       memoryType: z
@@ -75,6 +77,7 @@ export function registerMemoryTools(server: McpServer) {
     },
     async ({
       title,
+      namespace,
       content,
       summary,
       memoryType,
@@ -95,6 +98,7 @@ export function registerMemoryTools(server: McpServer) {
       eventIdStart,
       eventIdEnd,
     }) => {
+      const namespaceValue = validateNamespace(namespace) ?? undefined;
       // authorModel guard: SELF-type memories (SELF_SCORE / experiencer=SELF)
       // must be attributed, otherwise the score view can't tell which
       // instrument logged the score. Reject so the caller can supply it.
@@ -133,6 +137,7 @@ export function registerMemoryTools(server: McpServer) {
       // to avoid pulling it back.
       const memory = await prisma.memory.create({
         data: {
+          namespace: namespaceValue,
           title,
           content,
           summary,
@@ -240,12 +245,13 @@ export function registerMemoryTools(server: McpServer) {
       query: z.string().trim().min(1).describe("Natural-language query — semantic or keyword"),
       memoryType: z.enum(["CORE", "STATE", "EPISODE", "PREFERENCE", "BOUNDARY", "RESTRICTED"]).optional(),
       topicId: z.string().optional(),
+      namespace: z.string().optional().describe("character/workspace namespace; only memories in this namespace are searched"),
       limit: z.number().default(10),
       includeContent: z.boolean().default(false).describe("true = return full content body, false = summary or first 200 chars of content"),
       scope: z.enum(["default", "full"]).default("default").describe("full = include observation/profile/RESTRICTED/private pool (only when no memoryType/topicId); default = memories table only, RESTRICTED excluded"),
       rerank: z.boolean().default(false).describe("true = local cross-encoder re-rank of the survivor pool (slower; for oblique semantic recall; falls back to hybrid order if the server is unavailable)"),
     },
-    async ({ query, memoryType, topicId, limit, includeContent, scope, rerank }) => {
+    async ({ query, memoryType, topicId, namespace, limit, includeContent, scope, rerank }) => {
       const body = (m: any) => (includeContent ? m.content : (m.summary || m.content.slice(0, 200)));
 
       // Single source of truth for hybrid scoring — embed → SQL CTE → JS
@@ -258,6 +264,7 @@ export function registerMemoryTools(server: McpServer) {
         limit,
         memoryType,
         topicId,
+        namespace,
         scope,
         components: rerank ? { rerank: true } : undefined,
       });
@@ -318,17 +325,19 @@ export function registerMemoryTools(server: McpServer) {
         .enum(["CORE", "STATE", "EPISODE", "PREFERENCE", "BOUNDARY"])
         .optional()
         .describe("Restrict to a type; unset = all non-RESTRICTED types. RESTRICTED is not an option (server does not expose it)."),
+      namespace: z.string().optional().describe("character/workspace namespace; only memories in this namespace are searched"),
       limit: z.number().default(8),
       includeContent: z
         .boolean()
         .default(false)
         .describe("true = full body, false = summary or first 200 chars"),
     },
-    async ({ query, memoryType, limit, includeContent }) => {
+    async ({ query, memoryType, namespace, limit, includeContent }) => {
       // over-fetch: content filtering drops some, so fetch 3x then trim to limit
       const scored = await scoreMemories(query, {
         limit: limit * 3,
         memoryType,
+        namespace,
         scope: "default", // hard-locked — never 'full'
       });
 
@@ -366,14 +375,16 @@ export function registerMemoryTools(server: McpServer) {
     "Read recent memories or all memories of a type. RESTRICTED type excluded by default — pass memoryType=RESTRICTED to opt in. includeContent=true returns the full body.",
     {
       memoryType: z.enum(["CORE", "STATE", "EPISODE", "PREFERENCE", "BOUNDARY", "RESTRICTED"]).optional(),
+      namespace: z.string().optional().describe("character/workspace namespace"),
       limit: z.number().default(20),
       includeContent: z.boolean().default(false).describe("true = return full content body, false = summary or first 200 chars of content"),
     },
-    async ({ memoryType, limit, includeContent }) => {
+    async ({ memoryType, namespace, limit, includeContent }) => {
       const body = (m: any) => (includeContent ? m.content : (m.summary || m.content.slice(0, 200)));
       const where = {
         isActive: true,
         ...(memoryType ? { memoryType } : { memoryType: { not: "RESTRICTED" as const } }),
+        ...(namespace ? { namespace } : {}),
       };
       const memories = await prisma.memory.findMany({
         where,
