@@ -22,15 +22,21 @@ export const CHAT_DIGEST_SHARED = { sourceType: "CHAT", experiencer: "SHARED" } 
 export const CHAT_DIGEST_WHERE = { memoryType: "EPISODE", ...CHAT_DIGEST_SHARED } as const;
 
 // Stored CHAT event.value shape + decode. role "assistant" ⇒ the AI ("self").
-export interface ChatEventValue { role: "user" | "assistant"; text: string }
+export interface ChatEventValue { role: "user" | "assistant"; text: string; threadId?: string; namespace?: string }
 export function parseChatEvent(
   value: string | null,
-): { role: "user" | "assistant"; text: string; who: "user" | "self"; threadId?: string } | null {
+): { role: "user" | "assistant"; text: string; who: "user" | "self"; threadId?: string; namespace?: string } | null {
   try {
     const o = JSON.parse(value || "{}");
     if (typeof o.text !== "string" || !o.text) return null;
     const role = o.role === "assistant" ? "assistant" : "user";
-    return { role, text: o.text, who: role === "assistant" ? "self" : "user", threadId: typeof o.threadId === "string" ? o.threadId : undefined };
+    return {
+      role,
+      text: o.text,
+      who: role === "assistant" ? "self" : "user",
+      threadId: typeof o.threadId === "string" ? o.threadId : undefined,
+      ...(typeof o.namespace === "string" ? { namespace: o.namespace } : {}),
+    };
   } catch {
     return null;
   }
@@ -50,19 +56,29 @@ export function validateThreadId(threadId: unknown): string | null {
   return threadId;
 }
 
+const NAMESPACE_RE = /^[A-Za-z0-9._:-]+$/;
+export function validateNamespace(namespace: unknown): string | null {
+  if (namespace == null || namespace === "") return null;
+  if (typeof namespace !== "string" || namespace.length > 128 || !NAMESPACE_RE.test(namespace)) {
+    throw new Error("namespace must be 1-128 chars of [A-Za-z0-9._:-]");
+  }
+  return namespace;
+}
+
 // Encode a CHAT event.value from a role + text — the counterpart to parseChatEvent.
 // One definition so every writer (POST /chat, the chat_write tool) stores the SAME
 // shape that parseChatEvent / loadMergedChat read.
 export function buildChatEventValue(
   role: string,
   text: string,
-  opts: { threadId?: string; maxLen?: number } = {},
+  opts: { threadId?: string; namespace?: string; maxLen?: number } = {},
 ): string {
-  const v: { role: "user" | "assistant"; text: string; threadId?: string } = {
+  const v: { role: "user" | "assistant"; text: string; threadId?: string; namespace?: string } = {
     role: role === "assistant" ? "assistant" : "user",
     text: text.slice(0, opts.maxLen ?? 8000),
   };
   if (opts.threadId) v.threadId = opts.threadId;
+  if (opts.namespace) v.namespace = opts.namespace;
   return JSON.stringify(v);
 }
 

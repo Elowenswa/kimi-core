@@ -140,10 +140,11 @@ app.post("/events", express.json(), async (req, res) => {
 // Behind the same global Bearer auth.
 app.post("/chat", express.json(), async (req, res) => {
   try {
-    const { role, text, threadId, source, dedupeKey } = (req.body ?? {}) as {
+    const { role, text, threadId, namespace, source, dedupeKey } = (req.body ?? {}) as {
       role?: string;
       text?: string;
       threadId?: string;
+      namespace?: string;
       source?: string;
       dedupeKey?: string;
     };
@@ -155,7 +156,7 @@ app.post("/chat", express.json(), async (req, res) => {
     // dedups on the optional client idempotency key so a retried send is a no-op.
     let result;
     try {
-      result = await writeChatEvent({ role, text, threadId, source, dedupeKey });
+      result = await writeChatEvent({ role, text, threadId, namespace, source, dedupeKey });
     } catch (e: unknown) {
       if (e instanceof Error && e.message.startsWith("threadId")) {
         res.status(400).json({ error: e.message });

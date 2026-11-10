@@ -345,14 +345,14 @@ export function buildPersona(opts: {
 }
 
 // ── unified cross-surface timeline: text + chatroom as one conversation line ──
-export interface MergedChatMsg { id: string; role: "user" | "assistant"; text: string; surface: "tg" | "chat"; at: Date; threadId?: string }
+export interface MergedChatMsg { id: string; role: "user" | "assistant"; text: string; surface: "tg" | "chat"; at: Date; threadId?: string; namespace?: string }
 // sinceTs given = anchored mode: pull primary + cross-chat CHAT rows from sinceTs onward, merge by time.
 //   The prefix grows append-only (the anchor does not move → stable cached prefix → cache_read hits),
 //   unlike a "latest N rows" window that slides off the oldest end and invalidates the cache each turn.
 // sinceTs omitted = legacy "latest take rows" mode (other callers may still use it).
 // threadId given = restrict to one conversation thread (front-end thread view);
 //   omitted = all threads merged into one line (model continuity / reentry).
-export async function loadMergedChat(prisma: PrismaClient, take = 40, sinceTs?: Date, threadId?: string): Promise<MergedChatMsg[]> {
+export async function loadMergedChat(prisma: PrismaClient, take = 40, sinceTs?: Date, threadId?: string, namespace?: string): Promise<MergedChatMsg[]> {
   const whereFor = (source: string) => ({
     eventType: "CHAT",
     source,
@@ -374,7 +374,9 @@ export async function loadMergedChat(prisma: PrismaClient, take = 40, sinceTs?: 
       const p = parseChatEvent(r.value);
       if (!p) return [];
       if (threadId && p.threadId !== threadId) return []; // exact-match guard over the coarse filter
-      return [{ id: r.id, role: p.role, text: p.text, surface, at: r.createdAt, threadId: p.threadId }];
+      if (namespace && p.namespace !== namespace) return [];
+      if (!namespace && p.namespace) return [];
+      return [{ id: r.id, role: p.role, text: p.text, surface, at: r.createdAt, threadId: p.threadId, namespace: p.namespace }];
     });
   // Secondary sort on event id breaks same-millisecond ties deterministically — the
   // cross-device contention case, where two surfaces write within one ms and a
@@ -390,7 +392,7 @@ export async function loadMergedChat(prisma: PrismaClient, take = 40, sinceTs?: 
 export interface ChatThread { threadId: string; title: string; lastAt: Date; count: number }
 export async function loadChatThreads(
   prisma: PrismaClient,
-  opts: { lookbackDays?: number; limit?: number } = {},
+  opts: { lookbackDays?: number; limit?: number; namespace?: string } = {},
 ): Promise<ChatThread[]> {
   const since = new Date(Date.now() - (opts.lookbackDays ?? 90) * MS_PER_DAY);
   const rows = await prisma.event.findMany({
@@ -401,7 +403,7 @@ export async function loadChatThreads(
   const map = new Map<string, { title: string; lastAt: Date; count: number }>();
   for (const r of rows) {
     const p = parseChatEvent(r.value);
-    if (!p || !p.threadId) continue;
+    if (!p || !p.threadId || (opts.namespace ? p.namespace !== opts.namespace : !!p.namespace)) continue;
     const e = map.get(p.threadId);
     if (!e) map.set(p.threadId, { title: p.role === "user" ? p.text.slice(0, 60) : "", lastAt: r.createdAt, count: 1 });
     else {

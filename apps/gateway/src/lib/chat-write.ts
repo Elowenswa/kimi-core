@@ -11,12 +11,13 @@
 
 import { Prisma, EventType } from "@prisma/client";
 import prisma from "../db.js";
-import { CHAT_SOURCE, buildChatEventValue, validateThreadId } from "@kimi/context-core";
+import { CHAT_SOURCE, buildChatEventValue, validateNamespace, validateThreadId } from "@kimi/context-core";
 
 export interface ChatWriteInput {
   role?: string;
   text: string;
   threadId?: string;
+  namespace?: string;
   source?: string;
   /** Client-supplied idempotency key — a retry with the same key returns the original row. */
   dedupeKey?: string;
@@ -36,10 +37,11 @@ export interface ChatWriteResult {
  */
 export async function writeChatEvent(input: ChatWriteInput): Promise<ChatWriteResult> {
   const threadId = validateThreadId(input.threadId) ?? undefined; // throws on malformed
+  const namespace = validateNamespace(input.namespace) ?? undefined;
   const dedupeKey = input.dedupeKey && input.dedupeKey.trim() ? input.dedupeKey.trim().slice(0, 200) : null;
   const data = {
     eventType: EventType.CHAT,
-    value: buildChatEventValue(input.role ?? "user", input.text, { threadId }),
+    value: buildChatEventValue(input.role ?? "user", input.text, { threadId, namespace }),
     source: input.source && input.source.trim() ? input.source.trim().slice(0, 80) : CHAT_SOURCE,
     dedupeKey,
   };

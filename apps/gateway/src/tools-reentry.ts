@@ -23,11 +23,12 @@ export function registerReentryTools(server: McpServer) {
       take: z.number().int().positive().max(500).optional().describe("max messages to return (default 40)"),
       sinceISO: z.string().optional().describe("ISO timestamp; return messages at/after it (incremental polling)"),
       threadId: z.string().optional().describe("restrict to one conversation thread; omit for all threads merged"),
+      namespace: z.string().optional().describe("character/workspace namespace; isolates this chat timeline"),
     },
-    async ({ take, sinceISO, threadId }) => {
+    async ({ take, sinceISO, threadId, namespace }) => {
       const parsed = sinceISO ? new Date(sinceISO) : undefined;
       const since = parsed && !Number.isNaN(parsed.getTime()) ? parsed : undefined;
-      const msgs = await loadMergedChat(prisma, take ?? 40, since, threadId);
+      const msgs = await loadMergedChat(prisma, take ?? 40, since, threadId, namespace);
       return {
         content: [
           {
@@ -52,10 +53,11 @@ export function registerReentryTools(server: McpServer) {
       role: z.enum(["user", "assistant"]).optional().describe("who said it (default user)"),
       text: z.string().describe("the message text"),
       threadId: z.string().optional().describe("conversation thread id; groups messages for a front-end thread view"),
+      namespace: z.string().optional().describe("character/workspace namespace; isolates this chat timeline"),
       source: z.string().optional().describe("surface tag; defaults to the primary chat source"),
       dedupeKey: z.string().optional().describe("client idempotency key; a retry with the same key returns the original row instead of duplicating"),
     },
-    async ({ role, text, threadId, source, dedupeKey }) => {
+    async ({ role, text, threadId, namespace, source, dedupeKey }) => {
       if (!text || !text.trim()) {
         return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "text required" }) }] };
       }
@@ -63,7 +65,7 @@ export function registerReentryTools(server: McpServer) {
       // (shared with POST /chat) so a retried cross-device send can't duplicate.
       let result;
       try {
-        result = await writeChatEvent({ role, text, threadId, source, dedupeKey });
+        result = await writeChatEvent({ role, text, threadId, namespace, source, dedupeKey });
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
         if (msg.startsWith("threadId")) {
@@ -86,9 +88,10 @@ export function registerReentryTools(server: McpServer) {
     {
       limit: z.number().int().positive().max(200).optional().describe("max threads (default 50)"),
       lookbackDays: z.number().int().positive().max(3650).optional().describe("how far back to scan (default 90)"),
+      namespace: z.string().optional().describe("character/workspace namespace; isolates this chat thread list"),
     },
-    async ({ limit, lookbackDays }) => {
-      const threads = await loadChatThreads(prisma, { limit, lookbackDays });
+    async ({ limit, lookbackDays, namespace }) => {
+      const threads = await loadChatThreads(prisma, { limit, lookbackDays, namespace });
       return {
         content: [
           {
