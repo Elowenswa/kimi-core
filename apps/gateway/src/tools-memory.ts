@@ -72,6 +72,7 @@ async function recordMemoryChange(memoryId: string, namespace: string | null | u
         namespace: true,
         versionVector: true,
         memoryType: true,
+        tags: true,
         title: true,
         content: true,
         importance: true,
@@ -98,7 +99,7 @@ async function recordMemoryChange(memoryId: string, namespace: string | null | u
           content: memory.content,
           order: memory.importance,
           active: memory.isActive,
-          tags: [],
+          tags: Array.isArray(memory.tags) ? memory.tags : [],
           createdAt: memory.createdAt.toISOString(),
           updatedAt: memory.updatedAt.toISOString(),
           coreId: memory.id,
@@ -136,6 +137,7 @@ export function registerMemoryTools(server: McpServer) {
       dedupeKey: z.string().optional().describe("Client operation id reused when a queued write is retried"),
       versionVector: z.record(z.string(), z.number().int().nonnegative()).optional().describe("Causal version vector from the writing device"),
       content: z.string().describe("Memory content"),
+      tags: z.array(z.string().trim().min(1).max(40)).max(24).default([]).describe("Normalized user-defined labels"),
       summary: z.string().describe("Summary, <=300 chars. (1) do not repeat title (2) cover the full arc — cause / course / conclusion (3) keep the most important concrete details (numbers / names / key quoted phrases) (4) note any unresolved carryover."),
       memoryType: z
         .enum(["CORE", "STATE", "EPISODE", "PREFERENCE", "BOUNDARY", "RESTRICTED", "SELF_SCORE"])
@@ -191,6 +193,7 @@ export function registerMemoryTools(server: McpServer) {
       dedupeKey,
       versionVector,
       content,
+      tags,
       summary,
       memoryType,
       importance,
@@ -270,6 +273,7 @@ export function registerMemoryTools(server: McpServer) {
           versionVector,
           title,
           content,
+          tags: Array.from(new Set(tags.map((tag) => tag.trim().replace(/^#/, "").replace(/\s+/g, " ")))).filter(Boolean),
           summary,
           memoryType,
           importance,
@@ -380,12 +384,13 @@ export function registerMemoryTools(server: McpServer) {
       memoryType: z.enum(["CORE", "STATE", "EPISODE", "PREFERENCE", "BOUNDARY", "RESTRICTED"]).optional(),
       topicId: z.string().optional(),
       namespace: z.string().optional().describe("character/workspace namespace; only memories in this namespace are searched"),
+      tags: z.array(z.string().trim().min(1).max(40)).max(24).optional().describe("Optional labels; a memory matches when it contains any supplied label"),
       limit: z.number().default(10),
       includeContent: z.boolean().default(false).describe("true = return full content body, false = summary or first 200 chars of content"),
       scope: z.enum(["default", "full"]).default("default").describe("full = include observation/profile/RESTRICTED/private pool (only when no memoryType/topicId); default = memories table only, RESTRICTED excluded"),
       rerank: z.boolean().default(false).describe("true = local cross-encoder re-rank of the survivor pool (slower; for oblique semantic recall; falls back to hybrid order if the server is unavailable)"),
     },
-    async ({ query, memoryType, topicId, namespace, limit, includeContent, scope, rerank }) => {
+    async ({ query, memoryType, topicId, namespace, tags, limit, includeContent, scope, rerank }) => {
       const body = (m: any) => (includeContent ? m.content : (m.summary || m.content.slice(0, 200)));
 
       // Single source of truth for hybrid scoring — embed → SQL CTE → JS
@@ -399,6 +404,7 @@ export function registerMemoryTools(server: McpServer) {
         memoryType,
         topicId,
         namespace,
+        tags,
         scope,
         components: rerank ? { rerank: true } : undefined,
       });
@@ -460,18 +466,20 @@ export function registerMemoryTools(server: McpServer) {
         .optional()
         .describe("Restrict to a type; unset = all non-RESTRICTED types. RESTRICTED is not an option (server does not expose it)."),
       namespace: z.string().optional().describe("character/workspace namespace; only memories in this namespace are searched"),
+      tags: z.array(z.string().trim().min(1).max(40)).max(24).optional().describe("Optional labels; a memory matches when it contains any supplied label"),
       limit: z.number().default(8),
       includeContent: z
         .boolean()
         .default(false)
         .describe("true = full body, false = summary or first 200 chars"),
     },
-    async ({ query, memoryType, namespace, limit, includeContent }) => {
+    async ({ query, memoryType, namespace, tags, limit, includeContent }) => {
       // over-fetch: content filtering drops some, so fetch 3x then trim to limit
       const scored = await scoreMemories(query, {
         limit: limit * 3,
         memoryType,
         namespace,
+        tags,
         scope: "default", // hard-locked — never 'full'
       });
 
@@ -529,6 +537,7 @@ export function registerMemoryTools(server: McpServer) {
           namespace: true,
           versionVector: true,
           memoryType: true,
+          tags: true,
           title: true,
           content: true,
           importance: true,
@@ -546,6 +555,7 @@ export function registerMemoryTools(server: McpServer) {
           namespace: m.namespace,
           versionVector: m.versionVector,
           memoryType: m.memoryType,
+          tags: Array.isArray(m.tags) ? m.tags : [],
           title: m.title,
           content: m.content,
           importance: m.importance,
@@ -673,11 +683,12 @@ export function registerMemoryTools(server: McpServer) {
       title: z.string().optional().describe("New title (omit to keep)"),
       summary: z.string().optional().describe("New summary, <=300 chars (omit to keep)"),
       content: z.string().optional().describe("New content (omit to keep)"),
+      tags: z.array(z.string().trim().min(1).max(40)).max(24).optional().describe("Replacement label list (omit to keep)"),
       importance: z.number().min(1).max(5).optional().describe("New importance 1-5 (omit to keep)"),
       versionVector: z.record(z.string(), z.number().int().nonnegative()).optional().describe("Client's causal version after this edit"),
       baseVersionVector: z.record(z.string(), z.number().int().nonnegative()).optional().describe("Version observed before this edit"),
     },
-    async ({ id, authorization, title, summary, content, importance, versionVector, baseVersionVector }) => {
+    async ({ id, authorization, title, summary, content, tags, importance, versionVector, baseVersionVector }) => {
       if (!authorization || !authorization.trim()) {
         return {
           content: [{ type: "text" as const, text: "authorization required: memory_edit is user-gated — pass the user's instruction that asked for this edit." }],
@@ -709,14 +720,15 @@ export function registerMemoryTools(server: McpServer) {
           };
         }
       }
-      const data: { title?: string; summary?: string; content?: string; importance?: number; versionVector?: VersionVector } = {};
+      const data: { title?: string; summary?: string; content?: string; tags?: string[]; importance?: number; versionVector?: VersionVector } = {};
       if (title !== undefined) data.title = title;
       if (summary !== undefined) data.summary = summary;
       if (content !== undefined) data.content = content;
+      if (tags !== undefined) data.tags = Array.from(new Set(tags.map((tag) => tag.trim().replace(/^#/, "").replace(/\s+/g, " ")))).filter(Boolean);
       if (importance !== undefined) data.importance = importance;
       if (versionVector || existing.versionVector) data.versionVector = mergeVectors(existing.versionVector, versionVector);
       if (Object.keys(data).length === 0) {
-        return { content: [{ type: "text", text: "Nothing to edit — pass at least one of title / summary / content / importance." }] };
+        return { content: [{ type: "text", text: "Nothing to edit — pass at least one of title / summary / content / tags / importance." }] };
       }
       const updated = await prisma.memory.update({ where: { id }, data, select: { versionVector: true } });
 

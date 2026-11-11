@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { scoreRow, passesFilter } from "./retrieval.js";
+import { normalizeRetrievalTags, scoreRow, passesFilter } from "./retrieval.js";
 
 // Pure scoring + the survivor filter — no DB. scoreMemories' SQL path needs
 // Postgres, but the weighting math and the false-positive gate it feeds are
@@ -50,5 +50,15 @@ describe("passesFilter — the false-positive gate (KW 0.3 / SEM_FLOOR 0.38 / fi
   });
   it("a stricter (full-scope) final floor can be passed in", () => {
     expect(passesFilter({ ...base, final: 0.17, sem: 0.5 }, 0.15)).toBe(true); // full scope floor 0.15
+  });
+});
+
+describe("normalizeRetrievalTags", () => {
+  it("strips hash prefixes, trims whitespace and de-duplicates labels", () => {
+    expect(normalizeRetrievalTags([" #reading ", "reading", "  preference  ", ""])).toEqual(["reading", "preference"]);
+  });
+
+  it("caps the any-tag filter to a bounded request size", () => {
+    expect(normalizeRetrievalTags(Array.from({ length: 30 }, (_, i) => `tag-${i}`))).toHaveLength(24);
   });
 });

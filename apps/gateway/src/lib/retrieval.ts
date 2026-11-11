@@ -54,9 +54,14 @@ export type ScoreOpts = {
   memoryType?: MemoryType;
   topicId?: string;
   namespace?: string;
+  tags?: string[];
   components?: Components;
   scope?: "default" | "full";
 };
+
+export function normalizeRetrievalTags(tags?: readonly string[]): string[] {
+  return Array.from(new Set((tags ?? []).map((tag) => tag.trim().replace(/^#/, "").replace(/\s+/g, " ")).filter(Boolean))).slice(0, 24);
+}
 
 // A scored memory row. Carries the full memory columns selected by the SQL
 // (id/title/content/summary/importance/… plus sem_sim/kw_sim/time_decay/
@@ -197,7 +202,7 @@ export async function scoreMemories(
   query: string,
   opts: ScoreOpts = {},
 ): Promise<ScoredMemory[]> {
-  const { limit = 10, memoryType, topicId, namespace, components, scope = "default" } = opts;
+  const { limit = 10, memoryType, topicId, namespace, tags, components, scope = "default" } = opts;
   // An empty / whitespace query has no relevance signal: qPattern would be '%%',
   // which ILIKE matches against EVERY row (kw_sim = ILIKE_TITLE ≥ KW_FILTER_FLOOR →
   // passesFilter true for all), turning the externally-exposed memory_search_safe
@@ -228,6 +233,10 @@ export async function scoreMemories(
     : Prisma.empty;
   const namespaceFilter = namespace
     ? Prisma.sql`AND m."namespace" = ${namespace}`
+    : Prisma.empty;
+  const normalizedTags = normalizeRetrievalTags(tags);
+  const tagsFilter = normalizedTags.length
+    ? Prisma.sql`AND jsonb_typeof(m."tags") = 'array' AND m."tags" ?| ARRAY[${Prisma.join(normalizedTags)}]::text[]`
     : Prisma.empty;
 
   // Semantic vector (cosine sim) — null if no API key / no body / embed
@@ -279,7 +288,7 @@ export async function scoreMemories(
         AND e.name ILIKE ${qPattern}
       GROUP BY l."toId"
     )${pgMemCte}
-    SELECT m.id, m.title, m.content, m.summary, m.importance,
+    SELECT m.id, m.title, m.content, m.summary, m.tags, m.importance,
            m.valence, m.arousal, m.experiencer, m.resolution,
            m."topicId", m."memoryType", m."activationCount",
            m."digestTimeStart", m."digestTimeEnd",
@@ -304,6 +313,7 @@ export async function scoreMemories(
       ${typeFilter}
       ${topicFilter}
       ${namespaceFilter}
+      ${tagsFilter}
   `;
 
   // R-pool augmentation: in 'full' scope on the general search path, fold the

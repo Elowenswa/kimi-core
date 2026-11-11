@@ -138,6 +138,8 @@ model Memory {
   title           String
   summary         String?
   content         String
+  // User-defined normalized labels used by multi-dimensional retrieval.
+  tags            Json                         @default("[]")
   importance      Int                          @default(3) // 1-5
   emotionalWeight Float                        @default(0)
   stabilityScore  Float                        @default(0.5)
