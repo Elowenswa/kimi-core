@@ -458,7 +458,7 @@ export function registerMemoryTools(server: McpServer) {
   //      safe memory) to leaking anything sensitive.
   server.tool(
     "memory_search_safe",
-    "Non-sensitive retrieval over the memory store — for collaborating external agents. Same hybrid scoring as memory_search (semantic pgvector + keyword + entity edges), but the server hard-locks it: always scope=default (never touches the private/profile / observation / RESTRICTED pool), refuses RESTRICTED/SELF_SCORE types, and runs each hit through a public-facing content predicate (dropped on match). Returns the clean part of CORE/PREFERENCE/BOUNDARY/STATE/EPISODE: who the user is, how they work, preferences/boundaries, current state, decisions and recent context. If nothing is found say so; do not fabricate.",
+    "Non-sensitive retrieval over the memory store — for collaborating external agents. Same hybrid scoring as memory_search (semantic pgvector + keyword + entity edges), but the server hard-locks it: always scope=default (never touches the private/profile / observation / RESTRICTED pool), refuses RESTRICTED/SELF_SCORE types, and runs each hit through a public-facing content predicate (dropped on match). Returns the clean part of CORE/PREFERENCE/BOUNDARY/STATE/EPISODE: who the user is, how they work, preferences/boundaries, current state, decisions and recent context. Always reuse the exact memory_id from a result for a later edit/close/reopen; never invent or transform an ID. If nothing is found say so; do not fabricate.",
     {
       query: z.string().trim().min(1).describe("Natural-language query — semantic or keyword"),
       memoryType: z
@@ -505,7 +505,7 @@ export function registerMemoryTools(server: McpServer) {
         .slice(0, limit)
         .map(
           (m: any) =>
-            `[${m.memoryType}] ${m.title} (id:${m.id}, imp:${m.importance}, score:${m.final.toFixed(2)})\n${body(m)}`,
+            `[${m.memoryType}] ${m.title} (memory_id:${m.id}, core_id:${m.id}, imp:${m.importance}, score:${m.final.toFixed(2)})\n${body(m)}`,
         )
         .join("\n\n---\n\n");
       return { content: [{ type: "text", text }] };
