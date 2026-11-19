@@ -34,7 +34,7 @@ export function registerReentryTools(server: McpServer) {
           {
             type: "text",
             text: JSON.stringify(
-              msgs.map((m) => ({ id: m.id, role: m.role, text: m.text, surface: m.surface, at: m.at.toISOString(), threadId: m.threadId })),
+              msgs.map((m) => ({ id: m.id, role: m.role, text: m.text, thinking: m.thinking, thinkingSec: m.thinkingSec, tools: m.tools, surface: m.surface, at: m.at.toISOString(), threadId: m.threadId })),
             ),
           },
         ],
@@ -54,10 +54,20 @@ export function registerReentryTools(server: McpServer) {
       text: z.string().describe("the message text"),
       threadId: z.string().optional().describe("conversation thread id; groups messages for a front-end thread view"),
       namespace: z.string().optional().describe("character/workspace namespace; isolates this chat timeline"),
+      thinking: z.string().max(20000).optional().describe("assistant reasoning shown in Cogitatio"),
+      thinkingSec: z.number().int().nonnegative().max(86400).optional().describe("assistant reasoning duration in seconds"),
+      tools: z.array(z.object({
+        id: z.string(),
+        name: z.string(),
+        arguments: z.string().optional(),
+        preview: z.string().optional(),
+        status: z.enum(["pending", "done", "error"]),
+        ms: z.number().nonnegative().optional(),
+      })).max(50).optional().describe("tool execution timeline shown in Actus"),
       source: z.string().optional().describe("surface tag; defaults to the primary chat source"),
       dedupeKey: z.string().optional().describe("client idempotency key; a retry with the same key returns the original row instead of duplicating"),
     },
-    async ({ role, text, threadId, namespace, source, dedupeKey }) => {
+    async ({ role, text, threadId, namespace, thinking, thinkingSec, tools, source, dedupeKey }) => {
       if (!text || !text.trim()) {
         return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "text required" }) }] };
       }
@@ -65,7 +75,7 @@ export function registerReentryTools(server: McpServer) {
       // (shared with POST /chat) so a retried cross-device send can't duplicate.
       let result;
       try {
-        result = await writeChatEvent({ role, text, threadId, namespace, source, dedupeKey });
+        result = await writeChatEvent({ role, text, threadId, namespace, thinking, thinkingSec, tools, source, dedupeKey });
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
         if (msg.startsWith("threadId")) {

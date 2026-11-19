@@ -345,7 +345,7 @@ export function buildPersona(opts: {
 }
 
 // ── unified cross-surface timeline: text + chatroom as one conversation line ──
-export interface MergedChatMsg { id: string; role: "user" | "assistant"; text: string; surface: "tg" | "chat"; at: Date; threadId?: string; namespace?: string }
+export interface MergedChatMsg { id: string; role: "user" | "assistant"; text: string; surface: "tg" | "chat"; at: Date; threadId?: string; namespace?: string; thinking?: string; thinkingSec?: number; tools?: import("./sources.js").ChatToolEvent[] }
 // sinceTs given = anchored mode: pull primary + cross-chat CHAT rows from sinceTs onward, merge by time.
 //   The prefix grows append-only (the anchor does not move → stable cached prefix → cache_read hits),
 //   unlike a "latest N rows" window that slides off the oldest end and invalidates the cache each turn.
@@ -377,7 +377,7 @@ export async function loadMergedChat(prisma: PrismaClient, take = 40, sinceTs?: 
       if (threadId && p.threadId !== threadId) return []; // exact-match guard over the coarse filter
       if (namespace && p.namespace !== namespace) return [];
       if (!namespace && p.namespace) return [];
-      return [{ id: r.id, role: p.role, text: p.text, surface, at: r.createdAt, threadId: p.threadId, namespace: p.namespace }];
+      return [{ id: r.id, role: p.role, text: p.text, surface, at: r.createdAt, threadId: p.threadId, namespace: p.namespace, thinking: p.thinking, thinkingSec: p.thinkingSec, tools: p.tools }];
     });
   // Secondary sort on event id breaks same-millisecond ties deterministically — the
   // cross-device contention case, where two surfaces write within one ms and a

@@ -22,10 +22,26 @@ export const CHAT_DIGEST_SHARED = { sourceType: "CHAT", experiencer: "SHARED" } 
 export const CHAT_DIGEST_WHERE = { memoryType: "EPISODE", ...CHAT_DIGEST_SHARED } as const;
 
 // Stored CHAT event.value shape + decode. role "assistant" ⇒ the AI ("self").
-export interface ChatEventValue { role: "user" | "assistant"; text: string; threadId?: string; namespace?: string }
+export interface ChatToolEvent {
+  id: string;
+  name: string;
+  arguments?: string;
+  preview?: string;
+  status: "pending" | "done" | "error";
+  ms?: number;
+}
+export interface ChatEventValue {
+  role: "user" | "assistant";
+  text: string;
+  threadId?: string;
+  namespace?: string;
+  thinking?: string;
+  thinkingSec?: number;
+  tools?: ChatToolEvent[];
+}
 export function parseChatEvent(
   value: string | null,
-): { role: "user" | "assistant"; text: string; who: "user" | "self"; threadId?: string; namespace?: string } | null {
+): ChatEventValue & { who: "user" | "self" } | null {
   try {
     const o = JSON.parse(value || "{}");
     if (typeof o.text !== "string" || !o.text) return null;
@@ -36,6 +52,9 @@ export function parseChatEvent(
       who: role === "assistant" ? "self" : "user",
       threadId: typeof o.threadId === "string" ? o.threadId : undefined,
       ...(typeof o.namespace === "string" ? { namespace: o.namespace } : {}),
+      ...(typeof o.thinking === "string" ? { thinking: o.thinking.slice(0, 20000) } : {}),
+      ...(Number.isFinite(o.thinkingSec) ? { thinkingSec: Math.max(0, Math.round(o.thinkingSec)) } : {}),
+      ...(Array.isArray(o.tools) ? { tools: o.tools.slice(0, 50) as ChatToolEvent[] } : {}),
     };
   } catch {
     return null;
@@ -71,14 +90,17 @@ export function validateNamespace(namespace: unknown): string | null {
 export function buildChatEventValue(
   role: string,
   text: string,
-  opts: { threadId?: string; namespace?: string; maxLen?: number } = {},
+  opts: { threadId?: string; namespace?: string; thinking?: string; thinkingSec?: number; tools?: ChatToolEvent[]; maxLen?: number } = {},
 ): string {
-  const v: { role: "user" | "assistant"; text: string; threadId?: string; namespace?: string } = {
+  const v: ChatEventValue = {
     role: role === "assistant" ? "assistant" : "user",
     text: text.slice(0, opts.maxLen ?? 8000),
   };
   if (opts.threadId) v.threadId = opts.threadId;
   if (opts.namespace) v.namespace = opts.namespace;
+  if (opts.thinking) v.thinking = opts.thinking.slice(0, 20000);
+  if (typeof opts.thinkingSec === "number" && Number.isFinite(opts.thinkingSec)) v.thinkingSec = Math.max(0, Math.round(opts.thinkingSec));
+  if (opts.tools?.length) v.tools = opts.tools.slice(0, 50);
   return JSON.stringify(v);
 }
 
